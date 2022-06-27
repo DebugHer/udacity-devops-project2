@@ -1,0 +1,224 @@
+Description: >
+  Adegoke Ayomikun / Udagram, 
+  Udacity Cloud, DevOps Nanodegree Project 2
+  Cloudformation IAC
+  EC2 Instance: Bastion Host
+
+Parameters:
+  EnvironmentName:
+    Description: An Environment Name for prefixing resources names
+    Type: String
+
+  BastionS3:
+    Description: Bucket on which the ssh key is hosted
+    Type: String
+    Default: udagram-dannydevbucket
+
+  BastionKeySSH:
+    Description: KeyName to access bastion host
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: udagram-key
+
+  SourceIP:
+    Description: Source IP address to allow SSH access to the bastion host
+    Type: String
+    Default: 197.211.61.33/32
+
+
+Resources:
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow connections from specified source security group
+      VpcId:
+          Fn::ImportValue:
+            !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol : -1
+        CidrIp : 0.0.0.0/0
+
+  UdagramRole:
+    Type: 'AWS::IAM::Role'
+    Properties: 
+      Description: Creates an IAM Role for Udagram with read-only access to S3 bucket
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      
+  UdagramRolePolicies: 
+    Type: "AWS::IAM::Policy"
+    Properties: 
+      PolicyName: bastion-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: 'arn:aws:s3:::udagram-dannydevbucket/*'
+      Roles: 
+        - !Ref UdagramRole
+
+  BastionIamInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles:
+        - !Ref UdagramRole
+
+  BastionEc2Instance1:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - BastionSecurityGroup
+      - BastionIamInstanceProfile
+    Properties: 
+      ImageId: ami-00ddb0e5626798373
+      KeyName: !Ref BastionKeySSH
+      InstanceType: t3.medium
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      SubnetId: 
+        Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+      IamInstanceProfile:
+        Ref: BastionIamInstanceProfile
+      Tags:
+        - Key: Name
+          Value: Bastion Host 1
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          LOG_LOCATION="/var/log"   
+          exec >> $LOG_LOCATION/cloud-init-output.log 2>&1
+          apt-get update -y
+          apt-get install unzip awscli -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          aws s3 cp s3://${BastionS3}/${BastionKeySSH}.pem /home/ubuntu
+          chmod 400 ${BastionKeySSH}.pem
+
+  EIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+
+  EIPAssociation1:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn:
+      - BastionEc2Instance1
+      - EIP1
+    Properties:
+      InstanceId:
+        Ref: BastionEc2Instance1
+      AllocationId:
+        Fn::GetAtt:
+          - EIP1
+          - AllocationId
+
+  BastionEc2Instance2: 
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - BastionSecurityGroup
+      - BastionIamInstanceProfile
+    Properties: 
+      ImageId: ami-00ddb0e5626798373
+      KeyName: !Ref BastionKeySSH
+      InstanceType: t3.small
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      SubnetId: 
+        Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs:
+            VolumeSize: '10'
+      IamInstanceProfile:
+        Ref: BastionIamInstanceProfile
+      Tags:
+        - Key: Name
+          Value: Bastion Host 2
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          LOG_LOCATION="/var/log"   
+          exec >> $LOG_LOCATION/cloud-init-output.log 2>&1
+          apt-get update -y
+          apt-get install unzip awscli -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          aws s3 cp s3://${BastionS3}/${BastionKeySSH}.pem /home/ubuntu
+          chmod 400 ${BastionKeySSH}.pem
+
+  EIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+
+  EIPAssociation2:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn:
+      - BastionEc2Instance2
+      - EIP2
+    Properties:
+      InstanceId:
+        Ref: BastionEc2Instance2
+      AllocationId:
+        Fn::GetAtt:
+          - EIP2
+          - AllocationId
+
+Outputs:
+  PolicyId:
+    Description: The logical ID of the EC2 IAM policy
+    Value: !Ref BastionIamInstanceProfile
+    Export:
+      Name: !Sub ${EnvironmentName}-BASTION-IAM-NAME
+
+  Role:
+    Description: IAM to allow ec2 instances to manage web app in s3
+    Value: !GetAtt UdagramRole.Arn
+    Export:
+      Name: !Sub ${EnvironmentName}-BASTION-IAM-ARN
+
+  CIDRBastion1:
+    Description: The CIDR of Bastion Host 0
+    Value: !Join ["", [!GetAtt BastionEc2Instance1.PrivateIp, !Sub "/32"]]
+    Export:
+      Name: !Sub ${EnvironmentName}-BASTION1-CIDR
+
+  CIDRBastion2:
+    Description: The CIDR to the Bastion Host 1
+    Value: !Join ["", [!GetAtt BastionEc2Instance2.PrivateIp, !Sub "/32"]]
+    Export:
+      Name: !Sub ${EnvironmentName}-BASTION2-CIDR
+
+  BastionKeySSH:
+    Description: SSH Key Name
+    Value: !Sub ${BastionKeySSH}
+    Export:
+      Name: !Sub ${EnvironmentName}-BASTION-KEYNAME
+  
+  
